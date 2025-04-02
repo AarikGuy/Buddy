@@ -31,12 +31,39 @@
  */
 size_t btok(size_t bytes)
 {
-    //DO NOT use math.pow
+    size_t k = 0;
+    size_t size = 1;
+    
+    //Finds the smallest k where 2^k >= bytes
+    while (size < bytes) {
+        k++;
+        // Doubles the size equivalent to 2^k
+        size <<= 1;
+        
+        // Handles any potential overflow
+        if (size == 0) {
+            return MAX_K - 1;
+        }
+    }
+    
+    return k;
 }
 
 struct avail *buddy_calc(struct buddy_pool *pool, struct avail *buddy)
 {
-
+     // Calculates the offset from the base address
+     uintptr_t base_addr = (uintptr_t)pool->base;
+     uintptr_t buddy_addr = (uintptr_t)buddy;
+     uintptr_t offset = buddy_addr - base_addr;
+     
+     // The buddy of a block with offset X and size 2^k is at offset X XOR 2^k
+     size_t block_size = (UINT64_C(1) << buddy->kval);
+     uintptr_t buddy_offset = offset ^ block_size;
+     
+     // Calculates the address
+     struct avail *buddy_block = (struct avail *)(base_addr + buddy_offset);
+     
+     return buddy_block;
 }
 
 void *buddy_malloc(struct buddy_pool *pool, size_t size)
