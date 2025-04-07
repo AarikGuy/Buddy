@@ -41,7 +41,7 @@ size_t btok(size_t bytes)
         size <<= 1;
         
         // Handles any potential overflow
-        if (size == 0) {
+        if (size < (1UL << k)) {  // This checks if overflow occurred
             return MAX_K - 1;
         }
     }
@@ -68,24 +68,124 @@ struct avail *buddy_calc(struct buddy_pool *pool, struct avail *buddy)
 
 void *buddy_malloc(struct buddy_pool *pool, size_t size)
 {
+    // Validates the parameters
+    if (size == 0 || pool == NULL) {
+        errno = EINVAL;
+        return NULL;
+    }
 
-    //get the kval for the requested size with enough room for the tag and kval fields
+    // Check if the requested size exceeds the available memory
+    if (size > pool->numbytes) { 
+        errno = ENOMEM;  
+        return NULL;
+    } 
+    
+    // Gets the kval for the requested size with enough room for the tag and kval fields
+    size_t req_size = size + sizeof(struct avail);
+    size_t kval = btok(req_size);
+    
+    // This makes sure the block is at least the minimum size
+    if (kval < SMALLEST_K) {
+        kval = SMALLEST_K;
+    }
+    
+    // Find an available block
+    size_t curr_kval = kval;
+    struct avail *block = NULL;
 
-    //R1 Find a block
+    while (curr_kval <= pool->kval_m) {
+        if (pool->avail[curr_kval].next != &pool->avail[curr_kval]) {
+            block = pool->avail[curr_kval].next;
+            break;
+        }
+        curr_kval++;
+    }
+    
+    // If no block found, memory exhaustion due to fragmentation, set errno to ENOMEM
+    if (block == NULL) {
+        errno = ENOMEM;
+        return NULL;
+    }
 
-    //There was not enough memory to satisfy the request thus we need to set error and return NULL
+    // Remove block from free list
+    block->next->prev = block->prev;
+    block->prev->next = block->next;
+    
+    // Split blocks if necessary
+    while (curr_kval > kval) {
+        curr_kval--;
+        
+        size_t buddy_size = (UINT64_C(1) << curr_kval);
+        struct avail *buddy = (struct avail *)((char *)block + buddy_size);
+        
+        buddy->tag = BLOCK_AVAIL;
+        buddy->kval = curr_kval;
+        
+        buddy->next = pool->avail[curr_kval].next;
+        buddy->prev = &pool->avail[curr_kval];
+        pool->avail[curr_kval].next->prev = buddy;
+        pool->avail[curr_kval].next = buddy;
+    }
 
-    //R2 Remove from list;
+    block->tag = BLOCK_RESERVED;
+    block->kval = kval;
 
-    //R3 Split required?
-
-    //R4 Split the block
-
+    // Return a pointer to the user memory
+    return (void *)((char *)block + sizeof(struct avail));
 }
+
 
 void buddy_free(struct buddy_pool *pool, void *ptr)
 {
 
+    // Validates the parameters
+    if (ptr == NULL || pool == NULL) {
+        return;
+    }
+
+     // Checks if the pointer is within the managed memory range
+    if ((char*)ptr < (char*)pool->base || (char*)ptr >= (char*)pool->base + pool->numbytes) {
+        return; // Pointer is outside our memory pool
+    }
+        
+    // Gets the block header
+    struct avail *block = (struct avail *)((char *)ptr - sizeof(struct avail));
+        
+    // Validates the block
+    if (block->tag != BLOCK_RESERVED) {
+        return; // Not a valid block or already freed
+    }
+        
+    // Marks the block as available
+    block->tag = BLOCK_AVAIL;
+        
+    // Tries to coalesce with buddies
+    while (block->kval < pool->kval_m) {
+        // Finds the buddy
+        struct avail *buddy = buddy_calc(pool, block);
+            
+        // If buddy is not free or has a different size we can't merge
+        if (buddy->tag != BLOCK_AVAIL || buddy->kval != block->kval) {
+            break;
+        }
+            
+        // Remove the buddy from its free list
+        buddy->next->prev = buddy->prev;
+        buddy->prev->next = buddy->next;
+            
+        // Determines which block is the lower one in memory
+        if (buddy < block) {
+            block = buddy;
+        }
+            
+        block->kval++;
+    }
+        
+    // Add the block to the correct free list
+    block->next = pool->avail[block->kval].next;
+    block->prev = &pool->avail[block->kval];
+    pool->avail[block->kval].next->prev = block;
+    pool->avail[block->kval].next = block;
 }
 
 /**
@@ -95,12 +195,12 @@ void buddy_free(struct buddy_pool *pool, void *ptr)
  * @param ptr  The user memory
  * @param size the new size requested
  * @return void* pointer to the new user memory
- */
-void *buddy_realloc(struct buddy_pool *pool, void *ptr, size_t size)
-{
-    //Required for Grad Students
-    //Optional for Undergrad Students
-}
+ */ // I just commented this out to get rid of the warnings
+// void *buddy_realloc(struct buddy_pool *pool, void *ptr, size_t size)
+// {
+//     //Required for Grad Students
+//     //Optional for Undergrad Students
+// }
 
 void buddy_init(struct buddy_pool *pool, size_t size)
 {
